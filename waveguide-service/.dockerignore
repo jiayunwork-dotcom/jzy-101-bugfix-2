@@ -1,0 +1,17 @@
+# 本地构建产物
+bin/
+*.test
+*.out
+
+# Go 工作区
+vendor/
+
+# 编辑器/系统
+.DS_Store
+.idea/
+.vscode/
+.git/
+.gitignore
+README.md
+Dockerfile
+.dockerignore
