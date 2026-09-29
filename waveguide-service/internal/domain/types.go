@@ -22,6 +22,9 @@ type Mode struct {
 type Profile struct {
 	Name     string   `json:"name"`
 	Geometry Geometry `json:"geometry"`
+	// Revision 是服务内单调递增的登记序号；每次成功登记（含同名删除后重登）都会获得新值。
+	// 它不属于客户端提交内容，只用于区分同名档案的不同登记。
+	Revision int64 `json:"-"`
 }
 
 // State 传播状态。

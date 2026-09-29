@@ -129,6 +129,69 @@ func TestProfileLifecycle(t *testing.T) {
 	}
 }
 
+// 删除同名档案后重登：HTTP 点名计算必须立即看到删除标记和新登记序号。
+func TestCalculateAcrossDeleteAndSameNameReregisterHTTP(t *testing.T) {
+	rtr := setupRouter()
+	calcPath := "/api/v1/profiles/bench-7/calculate"
+
+	create := func(a float64) (int, map[string]any) {
+		return doJSON(t, rtr, http.MethodPost, "/api/v1/profiles", map[string]any{
+			"name": "bench-7", "broad_dimension": a, "narrow_dimension": 0.01,
+		})
+	}
+	code, oldProfile := create(0.03)
+	if code != http.StatusCreated {
+		t.Fatalf("create old bench-7: %d %v", code, oldProfile)
+	}
+	code, oldCalc := doCalc(t, rtr, calcPath, modeBody(1, 0, []float64{6e9}))
+	if code != http.StatusOK || oldCalc.RegistrationRevision != int64(oldProfile["registration_revision"].(float64)) {
+		t.Fatalf("old calculate: code=%d calc=%+v profile=%v", code, oldCalc, oldProfile)
+	}
+
+	if code, _ = doJSON(t, rtr, http.MethodDelete, "/api/v1/profiles/bench-7", nil); code != http.StatusOK {
+		t.Fatalf("delete bench-7: %d", code)
+	}
+	if code, _ = doCalc(t, rtr, calcPath, modeBody(1, 0, []float64{6e9})); code != http.StatusNotFound {
+		t.Fatalf("calculate after delete must be 404, got %d", code)
+	}
+
+	code, newProfile := create(0.02)
+	if code != http.StatusCreated {
+		t.Fatalf("recreate bench-7: %d %v", code, newProfile)
+	}
+	if newProfile["registration_revision"] == oldProfile["registration_revision"] {
+		t.Fatal("same-name reregistration must expose a new registration revision")
+	}
+	code, newCalc := doCalc(t, rtr, calcPath, modeBody(1, 0, []float64{6e9}))
+	if code != http.StatusOK {
+		t.Fatalf("calculate after recreate: %d", code)
+	}
+	if newCalc.RegistrationRevision != int64(newProfile["registration_revision"].(float64)) {
+		t.Fatalf("new calc revision %v != profile revision %v",
+			newCalc.RegistrationRevision, newProfile["registration_revision"])
+	}
+	if newCalc.Geometry["broad_dimension"] != 0.02 ||
+		newCalc.CutoffFrequency != newProfile["dominant_cutoff_frequency"].(float64) {
+		t.Fatalf("new calculation used stale profile: calc=%+v profile=%v", newCalc, newProfile)
+	}
+	if newCalc.Results[0].Result.State != "evanescent" {
+		t.Fatalf("6 GHz against a=0.02m must be evanescent, got %+v", newCalc.Results[0])
+	}
+
+	_, adhoc := doCalc(t, rtr, "/api/v1/calculate", map[string]any{
+		"broad_dimension":  0.02,
+		"narrow_dimension": 0.01,
+		"mode":             map[string]int{"m": 1, "n": 0},
+		"frequencies":      []float64{6e9},
+	})
+	if newCalc.CutoffFrequency != adhoc.CutoffFrequency ||
+		newCalc.Geometry["broad_dimension"] != adhoc.Geometry["broad_dimension"] ||
+		newCalc.Geometry["narrow_dimension"] != adhoc.Geometry["narrow_dimension"] ||
+		newCalc.Results[0].Result.State != adhoc.Results[0].Result.State {
+		t.Fatalf("named and ad hoc calculations differ:\n named=%+v\n adhoc=%+v", newCalc, adhoc)
+	}
+}
+
 // 定义与服务 JSON 对齐的强类型响应，便于断言可选字段是否存在。
 type freqResult struct {
 	Frequency float64 `json:"frequency"`
@@ -144,9 +207,11 @@ type freqResult struct {
 }
 
 type calcResponse struct {
-	CutoffFrequency float64      `json:"cutoff_frequency"`
-	ProfileName     *string      `json:"profile_name"`
-	Results         []freqResult `json:"results"`
+	CutoffFrequency      float64            `json:"cutoff_frequency"`
+	ProfileName          *string            `json:"profile_name"`
+	RegistrationRevision int64              `json:"registration_revision"`
+	Geometry             map[string]float64 `json:"geometry"`
+	Results              []freqResult       `json:"results"`
 }
 
 func doCalc(t *testing.T, rtr http.Handler, path string, body map[string]any) (int, calcResponse) {

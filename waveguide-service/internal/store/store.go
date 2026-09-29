@@ -13,23 +13,31 @@ import (
 var (
 	// ErrProfileExists 登记同名档案时返回，已有记录不会被覆盖。
 	ErrProfileExists = errors.New("profile already exists")
-	// ErrProfileNotFound 查询或删除不存在的档案时返回。
+	// ErrProfileNotFound 查询或删除不存在档案时返回。
 	ErrProfileNotFound = errors.New("profile not found")
 )
 
 // MemoryStore 基于读写锁 + map 的内存实现。
+// nextRevision 在每次成功登记时递增，使同名删除后重登也能获得不同的登记序号。
 type MemoryStore struct {
-	mu       sync.RWMutex
-	profiles map[string]domain.Profile
+	mu           sync.RWMutex
+	profiles     map[string]domain.Profile
+	nextRevision int64
 }
 
 // NewMemoryStore 创建存储并预置内置样例档案。
 func NewMemoryStore() *MemoryStore {
 	s := &MemoryStore{profiles: make(map[string]domain.Profile)}
 	for _, p := range builtinProfiles() {
+		p.Revision = s.nextRevisionLocked()
 		s.profiles[p.Name] = p
 	}
 	return s
+}
+
+func (s *MemoryStore) nextRevisionLocked() int64 {
+	s.nextRevision++
+	return s.nextRevision
 }
 
 // Create 登记新档案；同名已存在时返回 ErrProfileExists，不覆盖原记录。
@@ -39,6 +47,7 @@ func (s *MemoryStore) Create(p domain.Profile) error {
 	if _, ok := s.profiles[p.Name]; ok {
 		return ErrProfileExists
 	}
+	p.Revision = s.nextRevisionLocked()
 	s.profiles[p.Name] = p
 	return nil
 }
