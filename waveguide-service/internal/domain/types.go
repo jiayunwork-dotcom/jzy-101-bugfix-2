@@ -24,6 +24,17 @@ type Profile struct {
 	Geometry Geometry `json:"geometry"`
 }
 
+// Record 一条已登记的档案记录：档案本体加上存储层分配的登记序号。
+// 记录创建后不可变，只会被整体替换或删除；同名档案删除后重新登记
+// 会产生一条序号更大的新记录。档案视图与点名计算响应都携带该序号，
+// 便于事后对账某次计算用的是哪一次登记。
+type Record struct {
+	Profile
+	// Generation 登记序号：全局单调递增（允许不连续），
+	// 每次成功登记得到一个更大的值。
+	Generation uint64
+}
+
 // State 传播状态。
 type State string
 

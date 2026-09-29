@@ -19,11 +19,14 @@ type FrequencyOutcome struct {
 
 // Calculation 一次计算查询的完整结果。
 type Calculation struct {
-	ProfileName     *string            `json:"profile_name,omitempty"` // 仅"点名档案"路径携带
-	Geometry        domain.Geometry    `json:"geometry"`
-	Mode            domain.Mode        `json:"mode"`
-	CutoffFrequency float64            `json:"cutoff_frequency"` // 该模式截止频率 (Hz)
-	Results         []FrequencyOutcome `json:"results"`
+	ProfileName *string `json:"profile_name,omitempty"` // 仅"点名档案"路径携带
+	// ProfileGeneration 本次计算所用档案的登记序号，与档案视图的
+	// generation 一致，可据此对账；仅"点名档案"路径携带。
+	ProfileGeneration *uint64            `json:"profile_generation,omitempty"`
+	Geometry          domain.Geometry    `json:"geometry"`
+	Mode              domain.Mode        `json:"mode"`
+	CutoffFrequency   float64            `json:"cutoff_frequency"` // 该模式截止频率 (Hz)
+	Results           []FrequencyOutcome `json:"results"`
 }
 
 // dispatch 是"点名档案计算"与"临时提交计算"两条路径共用的唯一核算入口。

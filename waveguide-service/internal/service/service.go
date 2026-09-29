@@ -3,8 +3,6 @@
 package service
 
 import (
-	"sync"
-
 	"waveguide-service/internal/domain"
 	"waveguide-service/internal/physics"
 	"waveguide-service/internal/validate"
@@ -13,17 +11,15 @@ import (
 // Store 档案存取接口，由 store.MemoryStore 实现。
 // 面向接口编程，便于用替身实现做单测。
 type Store interface {
-	Create(p domain.Profile) error
-	Get(name string) (domain.Profile, error)
+	Register(p domain.Profile) (domain.Record, error)
+	Get(name string) (domain.Record, error)
 	Delete(name string) error
-	List() []domain.Profile
+	List() []domain.Record
 }
 
 // Service 业务服务，无请求级可变状态，可安全并发使用。
 type Service struct {
 	store Store
-	// resolved 计算热路径上按名解析过的档案，避免高并发点名计算反复争抢存储读锁。
-	resolved sync.Map // name -> domain.Profile
 }
 
 // New 构建服务。
@@ -31,22 +27,25 @@ func New(s Store) *Service {
 	return &Service{store: s}
 }
 
-// ProfileView 档案对外视图，附带主模 TE10 的截止频率方便工程师核对。
+// ProfileView 档案对外视图：附带主模 TE10 的截止频率方便工程师核对，
+// 以及本次登记的序号（与点名计算响应中的 profile_generation 一致，便于对账）。
 type ProfileView struct {
 	Name                    string          `json:"name"`
 	Geometry                domain.Geometry `json:"geometry"`
 	DominantMode            string          `json:"dominant_mode"`
 	DominantCutoffFrequency float64         `json:"dominant_cutoff_frequency"`
+	Generation              uint64          `json:"generation"`
 }
 
-func toView(p domain.Profile) ProfileView {
+func toView(rec domain.Record) ProfileView {
 	return ProfileView{
-		Name:         p.Name,
-		Geometry:     p.Geometry,
+		Name:         rec.Name,
+		Geometry:     rec.Geometry,
 		DominantMode: "TE10",
 		DominantCutoffFrequency: physics.CutoffFrequency(
-			p.Geometry.BroadDimension, p.Geometry.NarrowDimension,
-			p.Geometry.RelPermittivity, p.Geometry.RelPermeability, 1, 0),
+			rec.Geometry.BroadDimension, rec.Geometry.NarrowDimension,
+			rec.Geometry.RelPermittivity, rec.Geometry.RelPermeability, 1, 0),
+		Generation: rec.Generation,
 	}
 }
 
@@ -58,30 +57,30 @@ func (s *Service) RegisterProfile(p domain.Profile) (ProfileView, error) {
 	if err := validate.Geometry(p.Geometry); err != nil {
 		return ProfileView{}, err
 	}
-	if err := s.store.Create(p); err != nil {
+	rec, err := s.store.Register(p)
+	if err != nil {
 		return ProfileView{}, err
 	}
-	// 返回构造副本而非保存的对象，避免调用方拿到内部存储引用。
-	return toView(p), nil
+	return toView(rec), nil
 }
 
 // ListProfiles 列出全部已登记档案（含内置样例）。
 func (s *Service) ListProfiles() []ProfileView {
-	profiles := s.store.List()
-	views := make([]ProfileView, len(profiles))
-	for i, p := range profiles {
-		views[i] = toView(p)
+	records := s.store.List()
+	views := make([]ProfileView, len(records))
+	for i, rec := range records {
+		views[i] = toView(rec)
 	}
 	return views
 }
 
 // GetProfile 点名查看单个档案。
 func (s *Service) GetProfile(name string) (ProfileView, error) {
-	p, err := s.store.Get(name)
+	rec, err := s.store.Get(name)
 	if err != nil {
 		return ProfileView{}, err
 	}
-	return toView(p), nil
+	return toView(rec), nil
 }
 
 // DeleteProfile 删除档案；不存在时透传 ErrProfileNotFound。
@@ -90,31 +89,24 @@ func (s *Service) DeleteProfile(name string) error {
 }
 
 // CalculateWithProfile 路径一：点名已登记档案，配上模式指数与一个或多个频率求值。
+//
+// 取档案是一次无锁的原子加载，得到某一次真实登记的完整不可变记录：
+// 几何回显、截止频率、逐频点结果与登记序号必然来自同一次登记，不会出现
+// 拼凑结果；删除返回后这里立即未找到，同名重登返回后这里立即看到新记录。
+// 热路径不与登记/删除争抢任何锁，也不被其它名字的写操作拖慢。
 func (s *Service) CalculateWithProfile(name string, mode domain.Mode, freqs []float64) (*Calculation, error) {
 	if err := validate.Mode(mode); err != nil {
 		return nil, err
 	}
-	p, err := s.resolve(name)
+	rec, err := s.store.Get(name)
 	if err != nil {
 		return nil, err
 	}
-	calc := dispatch(p.Geometry, mode, freqs)
-	calc.ProfileName = &p.Name
+	calc := dispatch(rec.Geometry, mode, freqs)
+	calc.ProfileName = &rec.Name
+	gen := rec.Generation
+	calc.ProfileGeneration = &gen
 	return calc, nil
-}
-
-// resolve 按名取出参与计算的档案：先查已解析表，未命中再回源存储并记下。
-// 同名档案登记后不可覆盖，一个名字对应的截面参数不会被改写。
-func (s *Service) resolve(name string) (domain.Profile, error) {
-	if v, ok := s.resolved.Load(name); ok {
-		return v.(domain.Profile), nil
-	}
-	p, err := s.store.Get(name)
-	if err != nil {
-		return domain.Profile{}, err
-	}
-	s.resolved.Store(name, p)
-	return p, nil
 }
 
 // CalculateAdHoc 路径二：不登记档案，直接提交截面尺寸与频率现算一次。
